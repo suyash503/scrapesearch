@@ -1,0 +1,4 @@
+scrapy>=2.13,<3
+PyMySQL[rsa]>=1.1,<2      # [rsa] pulls in `cryptography`, needed for MySQL 8's caching_sha2_password login
+python-dotenv>=1.0,<2
+selenium>=4.20,<5         # 4.6+ bundles Selenium Manager, which fetches a chromedriver matching your Chrome
