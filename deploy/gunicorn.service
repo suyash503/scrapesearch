@@ -1,0 +1,53 @@
+# systemd unit for the Django API.
+# Install:  sudo cp deploy/gunicorn.service /etc/systemd/system/gunicorn.service
+#           sudo systemctl daemon-reload && sudo systemctl enable --now gunicorn
+# Logs:     journalctl -u gunicorn -f
+#
+# Assumes the repo is at /home/deploy/scrapesearch, owned by the `deploy` user,
+# with the virtualenv at /home/deploy/scrapesearch/.venv and secrets in /home/deploy/scrapesearch/.env.
+
+[Unit]
+Description=ScrapeSearch Django API (gunicorn)
+# Start after the network and the databases are up. `Wants` = start them too, but don't die if they fail
+# (the app returns 503 for search while ES is down, and systemd restarts us if we crash).
+After=network.target mysql.service elasticsearch.service
+Wants=mysql.service elasticsearch.service
+
+[Service]
+Type=notify
+User=deploy
+Group=www-data
+WorkingDirectory=/home/deploy/scrapesearch/backend
+# Secrets come from the same .env file used locally (chmod 600, owned by deploy).
+EnvironmentFile=/home/deploy/scrapesearch/.env
+# Production overrides: never run with DEBUG on a public server.
+Environment=DJANGO_DEBUG=0
+
+# --bind 127.0.0.1:8000  only nginx (same machine) can reach gunicorn, never the internet directly
+# --workers 3            rule of thumb: 2 x CPU cores + 1. On a 1-vCPU VPS, 3 is plenty.
+# --timeout 30           kill a worker stuck on one request for >30s (it gets replaced automatically)
+# --access-logfile -     access log to stdout, which journald collects
+ExecStart=/home/deploy/scrapesearch/.venv/bin/gunicorn config.wsgi:application \
+    --bind 127.0.0.1:8000 \
+    --workers 3 \
+    --timeout 30 \
+    --access-logfile - \
+    --error-logfile -
+# `systemctl reload gunicorn` sends HUP: gunicorn starts new workers with new code, then retires the old
+# ones, so a deploy doesn't drop requests.
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Crash? Come back after 5s. But if it crashes 5 times in 60s, stop trying (something is really broken:
+# look at `journalctl -u gunicorn`) instead of restart-looping forever.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Basic sandboxing: the app can't modify the OS or read other users' home dirs.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# Nightly scrape + incremental ES sync, for the `deploy` user.
+# Install:  crontab -u deploy deploy/scraper.cron     (replaces deploy's crontab)
+# Check:    crontab -l
+#
+# ┌ minute ┬ hour ┬ day-of-month ┬ month ┬ day-of-week
+# Cron runs with a nearly empty environment: no PATH from your shell, no venv, no .env.
+# So every command uses absolute paths, and the Python code loads .env itself (python-dotenv).
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+APP=/home/deploy/scrapesearch
+PY=/home/deploy/scrapesearch/.venv/bin
+LOGS=/home/deploy/scrapesearch/logs
+
+# 02:30 every night: books (Scrapy) -> quotes (Selenium) -> sync what changed into ES.
+# `&&` chains them, so the sync only runs if the scrapers succeeded.
+# flock -n: if last night's run is somehow still going, skip this one instead of running two at once.
+# >> file 2>&1: append stdout AND stderr to a log file (cron would otherwise try to email the output).
+30 2 * * * flock -n /tmp/scrapesearch-nightly.lock bash -c 'cd $APP/scraper && $PY/scrapy crawl books && $PY/python quotes_selenium.py && $PY/python $APP/backend/manage.py sync_es --since 26h' >> $LOGS/nightly.log 2>&1
+
+# Sundays 04:00: full reindex (new index + alias swap). Also cleans up books deleted from MySQL,
+# which the incremental sync can't see.
+0 4 * * 0 $PY/python $APP/backend/manage.py sync_es >> $LOGS/sync_full.log 2>&1
+
+# 03:15 every night: MySQL backup, keeps the last 7 days.
+15 3 * * * $APP/deploy/scripts/backup_mysql.sh >> $LOGS/backup.log 2>&1
+
+# Every 5 minutes: health check. Only prints (and so only logs) when something is wrong.
+*/5 * * * * $APP/deploy/scripts/healthcheck.sh --quiet >> $LOGS/healthcheck.log 2>&1
