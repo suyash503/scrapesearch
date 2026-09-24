@@ -1,0 +1,121 @@
+# Local stack for ScrapeSearch: MySQL (source of truth), Elasticsearch (search), Kibana (ES UI),
+# the Django API and the React dev server.
+# Usage:  docker compose up -d     (values come from .env, which you copy from .env.example)
+#         then scrape + sync once (see README): the app is at http://localhost:5173
+#
+# All ports are bound to 127.0.0.1 so only this machine can reach them. On the VPS the same rule
+# applies: MySQL and ES must never be exposed to the internet.
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ss-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}   # created on first start
+      MYSQL_USER: ${MYSQL_USER}           # app user, gets full rights on MYSQL_DATABASE only
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    # utf8mb4 = real UTF-8 (MySQL's old "utf8" can't store 4-byte chars such as emoji).
+    # UTC so CURRENT_TIMESTAMP (used by the scrapers) matches the UTC timestamps Django writes.
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-time-zone=+00:00
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql         # named volume: data survives `docker compose down`
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro   # first-start scripts (test DB grant)
+    healthcheck:
+      # $$ escapes $ for compose, so the variable is expanded inside the container.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  elasticsearch:
+    # Official Elastic image, pulled from Docker Hub. Same image as docker.elastic.co/elasticsearch/elasticsearch.
+    image: elasticsearch:${ES_VERSION}
+    container_name: ss-elasticsearch
+    restart: unless-stopped
+    environment:
+      - cluster.name=scrapesearch
+      - node.name=es01
+      # One node forms its own cluster. This also skips the production bootstrap checks.
+      - discovery.type=single-node
+      # Local only: no TLS or passwords. Never do this on a public server.
+      - xpack.security.enabled=false
+      # JVM heap. Min and max are equal so the heap never resizes at runtime.
+      # Keep it at ≤50% of RAM: Lucene relies on the OS page cache for the rest.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }  # Lucene keeps many segment files open
+    ports:
+      - "127.0.0.1:${ES_PORT:-9200}:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      # "yellow" is healthy for a single node: primaries are assigned, replicas have nowhere to go.
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+
+  kibana:
+    image: kibana:${ES_VERSION}   # must match the ES version
+    container_name: ss-kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200   # service name resolves on the compose network
+    ports:
+      - "127.0.0.1:${KIBANA_PORT:-5601}:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  api:
+    build: ./backend
+    container_name: ss-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the compose network, services reach each other by service name, not 127.0.0.1
+      # (127.0.0.1 inside a container is the container itself).
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      ES_URL: http://elasticsearch:9200
+      # Vite's proxy rewrites the Host header to the target ("api:8000"). Django rejects any Host that
+      # isn't in ALLOWED_HOSTS with a 400 (protection against Host-header attacks), so allow it here.
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,api
+    # Apply migrations (creates the tables on a fresh DB), then run the dev server (auto-reloads on edits).
+    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend:/app/backend  # live code: edit on the host, the container reloads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  web:
+    image: node:22-alpine
+    container_name: ss-web
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      API_URL: http://api:8000  # where Vite's dev proxy sends /api (see frontend/vite.config.js)
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume over node_modules: the container installs its own Linux packages there instead of
+      # using (or overwriting) the Windows/macOS ones in your frontend/node_modules.
+      - /app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:
+  es_data:

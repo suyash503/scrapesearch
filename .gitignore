@@ -1,0 +1,25 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# node
+node_modules/
+frontend/dist/
+
+# runtime output
+logs/
+*.log
+backend/staticfiles/
+
+# editor / OS / local tooling
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
