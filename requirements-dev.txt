@@ -1,0 +1,5 @@
+# Everything for local development and tests:  pip install -r requirements-dev.txt
+-r scraper/requirements.txt
+-r backend/requirements.txt
+pytest>=8,<9
+pytest-django>=4.9,<5
