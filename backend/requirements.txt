@@ -1,0 +1,6 @@
+Django>=5.2,<5.3            # 5.2 is the LTS release (security fixes until April 2028)
+djangorestframework>=3.15,<4
+mysqlclient>=2.2,<3         # Django's officially supported MySQL driver (C extension, fast)
+elasticsearch>=8.15,<9      # client major version must match the server (ES 8.x)
+python-dotenv>=1.0,<2
+gunicorn>=23,<24            # production WSGI server (Linux only, not used on Windows)
